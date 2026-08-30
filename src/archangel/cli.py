@@ -6,6 +6,7 @@ import os
 import threading
 import itertools
 import time
+import subprocess
 
 app = typer.Typer(
     help="ArchAngel — AI-powered system assistant for Arch Linux",
@@ -682,6 +683,208 @@ def wifi_scan():
             err=True,
         )
         raise typer.Exit(code=1)
+
+```python
+@app.command()
+def bluetooth_scan():
+    '''
+    Checks paired Bluetooth devices for connection or configuration problems
+    via the ArchAngel brain service.
+    '''
+    typer.echo("Checking paired Bluetooth devices...")
+
+    try:
+        # Get paired Bluetooth devices
+        result = subprocess.run(
+            ["bluetoothctl", "paired-devices"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        paired_devices = []
+
+        for line in result.stdout.strip().splitlines():
+            line = line.strip()
+
+            # Expected format:
+            # Device AA:BB:CC:DD:EE:FF Device Name
+            if not line.startswith("Device "):
+                continue
+
+            parts = line.split(" ", 2)
+
+            if len(parts) < 3:
+                continue
+
+            _, mac, name = parts
+
+            paired_devices.append({
+                "mac": mac,
+                "name": name
+            })
+
+        # No paired devices
+        if not paired_devices:
+            typer.echo(
+                typer.style(
+                    "No paired Bluetooth devices found.",
+                    fg=typer.colors.YELLOW
+                )
+            )
+            raise typer.Exit()
+
+        typer.echo(
+            typer.style(
+                f"Found {len(paired_devices)} paired Bluetooth device(s).",
+                fg=typer.colors.GREEN
+            )
+        )
+
+        # Get Bluetooth controller information
+        controller_result = subprocess.run(
+            ["bluetoothctl", "show"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        controller_info = controller_result.stdout.strip()
+
+        # Get currently connected devices
+        connected_result = subprocess.run(
+            ["bluetoothctl", "devices", "Connected"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        connected_devices = connected_result.stdout.strip()
+
+        # Build information for the brain service
+        device_info = "\n".join(
+            [
+                f"Device Name: {device['name']}\n"
+                f"MAC Address: {device['mac']}"
+                for device in paired_devices
+            ]
+        )
+
+        bluetooth_info = f"""
+Bluetooth Controller Information:
+{controller_info}
+
+Currently Connected Devices:
+{connected_devices if connected_devices else "None"}
+
+Paired Devices:
+{device_info}
+"""
+
+        typer.echo("Analyzing Bluetooth configuration...")
+
+        with httpx.Client(timeout=60) as client:
+            r = client.post(
+                f"{JAVA_SYSTEM_URL}/analyze",
+                content=bluetooth_info,
+                headers={
+                    "X-Api-Key": API_KEY,
+                    "Content-Type": "text/plain"
+                }
+            )
+
+            if r.status_code == 204:
+                typer.echo(
+                    typer.style(
+                        "No analysis available from ArchAngel service.",
+                        fg=typer.colors.YELLOW
+                    )
+                )
+                raise typer.Exit()
+
+            r.raise_for_status()
+            analysis = r.json()
+
+        analysis_text = analysis.get("content", "")
+
+        if not analysis_text:
+            typer.echo(
+                typer.style(
+                    "No Bluetooth problems detected.",
+                    fg=typer.colors.GREEN
+                )
+            )
+            raise typer.Exit()
+
+        # Check whether the brain found problems
+        lower_analysis = analysis_text.lower()
+
+        if (
+            "no problems" in lower_analysis
+            or "no issues" in lower_analysis
+            or "no problem" in lower_analysis
+            or "everything looks good" in lower_analysis
+        ):
+            typer.echo(
+                typer.style(
+                    "\n✔ No Bluetooth problems detected.",
+                    fg=typer.colors.GREEN
+                )
+            )
+        else:
+            typer.echo(
+                typer.style(
+                    "\n⚠ Potential Bluetooth problems detected.",
+                    fg=typer.colors.YELLOW
+                )
+            )
+
+            typer.echo(
+                f"\nBluetooth analysis:\n{analysis_text}\n"
+            )
+
+    except FileNotFoundError:
+        typer.echo(
+            typer.style(
+                "Error: bluetoothctl is not installed or not available.",
+                fg=typer.colors.RED
+            ),
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    except subprocess.CalledProcessError as e:
+        error_message = e.stderr.strip() if e.stderr else str(e)
+
+        typer.echo(
+            typer.style(
+                f"Error checking Bluetooth: {error_message}",
+                fg=typer.colors.RED
+            ),
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    except httpx.ConnectError:
+        typer.echo(
+            typer.style(
+                "Error: Could not connect to ArchAngel service. Is it running?",
+                fg=typer.colors.RED
+            ),
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    except httpx.HTTPStatusError as e:
+        typer.echo(
+            typer.style(
+                f"Error: Service returned {e.response.status_code}",
+                fg=typer.colors.RED
+            ),
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
 
 
 @app.command()
